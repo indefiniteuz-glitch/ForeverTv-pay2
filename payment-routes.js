@@ -46,49 +46,71 @@ async function createGatewayPayment({ amountSom, description }) {
 
 const PAID_STATUSES = ['success', 'paid', 'completed'];
 async function checkGatewayStatus(gatewayOrderId) {
-  const bearer = await gatewayGetBearer();
-  const r = await fetchRetry(`${GATEWAY_API_BASE}/transactions/?order_id=${encodeURIComponent(gatewayOrderId)}`, {
-    headers: { Authorization: `Bearer ${bearer}` },
-  });
-  if (!r.ok) return false;
-  const resp = await r.json();
-  const rows = Array.isArray(resp?.data) ? resp.data : [resp?.data].filter(Boolean);
-  return rows.some((tx) => PAID_STATUSES.includes(String(tx?.status || '').toLowerCase()));
+  try {
+    const bearer = await gatewayGetBearer();
+    const r = await fetchRetry(`${GATEWAY_API_BASE}/transactions/?order_id=${encodeURIComponent(gatewayOrderId)}`, {
+      headers: { Authorization: `Bearer ${bearer}` },
+    });
+    if (!r.ok) return false;
+    const resp = await r.json();
+    const rows = Array.isArray(resp?.data) ? resp.data : [resp?.data].filter(Boolean);
+    return rows.some((tx) => PAID_STATUSES.includes(String(tx?.status || '').toLowerCase()));
+  } catch (e) {
+    console.error('checkGatewayStatus error:', e.message);
+    return false;
+  }
 }
 
 async function markPaymentAsPaid(supabase, orderId, userId, amount) {
-  const { data, error } = await supabase
-    .from('payments')
-    .update({ status: 'paid', paid_at: new Date().toISOString() })
-    .eq('id', orderId)
-    .eq('status', 'pending')
-    .select();
-
-  if (error || !data || data.length === 0) return false;
-
-  if (userId && amount > 0) {
-    const { data: user } = await supabase
-      .from('xusers')
-      .select('balance')
-      .eq('user_id', userId)
+  try {
+    const { data: updatedPayment, error } = await supabase
+      .from('payments')
+      .update({ status: 'paid', paid_at: new Date().toISOString() })
+      .eq('id', orderId)
+      .select()
       .maybeSingle();
 
-    const currentBalance = Number(user?.balance || 0);
-    const newBalance = currentBalance + Number(amount);
+    if (error) {
+      console.error('payments status update error:', error.message);
+    }
 
-    await supabase
-      .from('xusers')
-      .update({ balance: newBalance })
-      .eq('user_id', userId);
+    if (userId && amount > 0) {
+      const { data: user, error: userError } = await supabase
+        .from('xusers')
+        .select('balance')
+        .eq('user_id', String(userId))
+        .maybeSingle();
+
+      if (userError) {
+        console.error('xusers select error:', userError.message);
+      }
+
+      const currentBalance = Number(user?.balance || 0);
+      const newBalance = currentBalance + Number(amount);
+
+      const { error: updateError } = await supabase
+        .from('xusers')
+        .update({ balance: newBalance })
+        .eq('user_id', String(userId));
+
+      if (updateError) {
+        console.error('xusers balance update error:', updateError.message);
+      } else {
+        console.log(`✅ User ${userId} balance updated: ${currentBalance} -> ${newBalance}`);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.error('markPaymentAsPaid exception:', e.message);
+    return false;
   }
-  return true;
 }
 
 export function registerPaymentRoutes(app, supabase) {
   app.post('/api/payment/create', async (req, res) => {
     try {
       const amount = Math.round(Number(req.body?.amount));
-      const userId = req.body?.user_id || req.body?.userId;
+      const userId = String(req.body?.user_id || req.body?.userId || '');
       const paymentMethod = req.body?.payment_method || 'click';
 
       if (!amount || amount < 1000) {
@@ -142,10 +164,10 @@ export function registerPaymentRoutes(app, supabase) {
 
   app.post('/api/webhook', async (req, res) => {
     try {
-      const gatewayOrderId = req.body?.order_id || req.body?.orderId;
+      const gatewayOrderId = req.body?.order_id || req.body?.orderId || req.body?.cardsystem_order_id || req.query?.order_id;
       if (!gatewayOrderId) return res.sendStatus(400);
 
-      const { data: order } = await supabase.from('payments').select('*').eq('inpay_order_id', gatewayOrderId).maybeSingle();
+      const { data: order } = await supabase.from('payments').select('*').eq('inpay_order_id', String(gatewayOrderId)).maybeSingle();
       if (order) {
         await markPaymentAsPaid(supabase, order.id, order.user_id, order.amount);
       }
