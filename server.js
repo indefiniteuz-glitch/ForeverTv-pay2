@@ -15,8 +15,13 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Root & Status endpoints for Cron Job / Keep-Alive (Returns 200 OK)
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'ForeverTV Payment Backend' });
+  res.status(200).json({ status: 'ok', service: 'ForeverTV Payment Backend' });
+});
+
+app.get('/status', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'Server active', timestamp: new Date().toISOString() });
 });
 
 registerPaymentRoutes(app, supabase);
