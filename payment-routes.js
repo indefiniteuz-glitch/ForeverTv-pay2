@@ -56,6 +56,34 @@ async function checkGatewayStatus(gatewayOrderId) {
   return rows.some((tx) => PAID_STATUSES.includes(String(tx?.status || '').toLowerCase()));
 }
 
+async function markPaymentAsPaid(supabase, orderId, userId, amount) {
+  const { data, error } = await supabase
+    .from('payments')
+    .update({ status: 'paid', paid_at: new Date().toISOString() })
+    .eq('id', orderId)
+    .eq('status', 'pending')
+    .select();
+
+  if (error || !data || data.length === 0) return false;
+
+  if (userId && amount > 0) {
+    const { data: user } = await supabase
+      .from('xusers')
+      .select('balance')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const currentBalance = Number(user?.balance || 0);
+    const newBalance = currentBalance + Number(amount);
+
+    await supabase
+      .from('xusers')
+      .update({ balance: newBalance })
+      .eq('user_id', userId);
+  }
+  return true;
+}
+
 export function registerPaymentRoutes(app, supabase) {
   app.post('/api/payment/create', async (req, res) => {
     try {
@@ -103,7 +131,7 @@ export function registerPaymentRoutes(app, supabase) {
 
       const paid = await checkGatewayStatus(order.inpay_order_id);
       if (paid) {
-        await supabase.from('payments').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', orderId);
+        await markPaymentAsPaid(supabase, order.id, order.user_id, order.amount);
       }
       res.json({ paid });
     } catch (e) {
@@ -117,7 +145,10 @@ export function registerPaymentRoutes(app, supabase) {
       const gatewayOrderId = req.body?.order_id || req.body?.orderId;
       if (!gatewayOrderId) return res.sendStatus(400);
 
-      await supabase.from('payments').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('inpay_order_id', gatewayOrderId);
+      const { data: order } = await supabase.from('payments').select('*').eq('inpay_order_id', gatewayOrderId).maybeSingle();
+      if (order) {
+        await markPaymentAsPaid(supabase, order.id, order.user_id, order.amount);
+      }
       res.sendStatus(200);
     } catch (e) {
       console.error('[api/webhook]', e.message);
